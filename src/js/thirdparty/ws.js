@@ -716,6 +716,10 @@ class BunWebSocketMocked extends EventEmitter {
   }
 
   ping(data, mask, cb) {
+    const ws = this.#ws;
+    if (!ws) {
+      throw new Error("WebSocket is not open: readyState 3 (CLOSED)");
+    }
     if (this.#state === 0) {
       throw new Error("WebSocket is not open: readyState 0 (CONNECTING)");
     }
@@ -731,7 +735,7 @@ class BunWebSocketMocked extends EventEmitter {
     if (typeof data === "number") data = data.toString();
 
     try {
-      this.#ws.ping(data);
+      ws.ping(data);
     } catch (error) {
       typeof cb === "function" && cb(error);
       return;
@@ -741,6 +745,10 @@ class BunWebSocketMocked extends EventEmitter {
   }
 
   pong(data, mask, cb) {
+    const ws = this.#ws;
+    if (!ws) {
+      throw new Error("WebSocket is not open: readyState 3 (CLOSED)");
+    }
     if (this.#state === 0) {
       throw new Error("WebSocket is not open: readyState 0 (CONNECTING)");
     }
@@ -756,7 +764,7 @@ class BunWebSocketMocked extends EventEmitter {
     if (typeof data === "number") data = data.toString();
 
     try {
-      this.#ws.pong(data);
+      ws.pong(data);
     } catch (error) {
       typeof cb === "function" && cb(error);
       return;
@@ -770,8 +778,8 @@ class BunWebSocketMocked extends EventEmitter {
       cb = opts;
       opts = undefined;
     }
-
-    if (this.#state === 1) {
+    const ws = this.#ws;
+    if (ws && this.#state === 1) {
       const compress = opts?.compress;
       data = normalizeData(data, opts);
       // send returns:
@@ -779,7 +787,7 @@ class BunWebSocketMocked extends EventEmitter {
       // 0 - dropped due to backpressure (not sent)
       // -1 - enqueue the data internaly
       // we dont need to do anything with the return value here
-      const written = this.#ws.send(data, compress);
+      const written = ws.send(data, compress);
       if (written === 0) {
         // dropped
         this.#enquedMessages.push([data, compress, cb]);
@@ -796,14 +804,15 @@ class BunWebSocketMocked extends EventEmitter {
   }
 
   close(code, reason) {
-    if (this.#state === 1) {
+    const ws = this.#ws;
+    if (ws && this.#state === 1) {
       this.#state = 2;
-      this.#ws.close(code, reason);
+      ws.close(code, reason);
     }
   }
 
   terminate() {
-    let state = this.#state;
+    const state = this.#state;
     if (state === 3) return;
     if (state === 0) {
       const msg = "WebSocket was closed before the connection was established";
@@ -811,7 +820,7 @@ class BunWebSocketMocked extends EventEmitter {
       return;
     }
 
-    let ws = this.#ws;
+    const ws = this.#ws;
     if (ws) {
       this.#state = WebSocket.CLOSING;
       ws.terminate();
