@@ -41,7 +41,6 @@ export default [
   ["MODULE_NOT_FOUND", Error, "Error"],
   ["ERR_ILLEGAL_CONSTRUCTOR", TypeError, "TypeError"],
   ["ERR_INVALID_URL", TypeError, "TypeError"],
-  ["ERR_UNKNOWN_ENCODING", TypeError, "TypeError"],
   ["ERR_BUFFER_TOO_LARGE", RangeError, "RangeError"],
   ["ERR_STREAM_RELEASE_LOCK", Error, "AbortError"],
   ["ERR_INVALID_STATE", Error, "Error"],
