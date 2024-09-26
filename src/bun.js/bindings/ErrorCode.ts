@@ -43,6 +43,8 @@ export default [
   ["ERR_INVALID_URL", TypeError, "TypeError"],
   ["ERR_BUFFER_TOO_LARGE", RangeError, "RangeError"],
   ["ERR_STREAM_RELEASE_LOCK", Error, "AbortError"],
+  ["ERR_BROTLI_INVALID_PARAM", RangeError, "RangeError"],
+  ["ERR_UNKNOWN_ENCODING", TypeError, "TypeError"],
   ["ERR_INVALID_STATE", Error, "Error"],
   ["ERR_BUFFER_OUT_OF_BOUNDS", RangeError, "RangeError"],
   ["ERR_UNKNOWN_SIGNAL", TypeError, "TypeError"],
