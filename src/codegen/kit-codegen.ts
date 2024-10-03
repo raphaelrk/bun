@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 
 // arg parsing
@@ -25,11 +25,11 @@ const kit_dir = join(import.meta.dirname, "../kit");
 process.chdir(kit_dir); // to make bun build predictable in development
 
 const results = await Promise.allSettled(
-  ["client", "server"].map(async mode => {
+  ["client", "server"].map(async side => {
     let result = await Bun.build({
-      entrypoints: [join(kit_dir, "hmr-runtime.ts")],
+      entrypoints: [join(kit_dir, `hmr-runtime-${side}.ts`)],
       define: {
-        mode: JSON.stringify(mode),
+        side: JSON.stringify(side),
         IS_BUN_DEVELOPMENT: String(!!debug),
       },
       minify: {
@@ -41,25 +41,25 @@ const results = await Promise.allSettled(
     // @ts-ignore
     let code = await result.outputs[0].text();
 
-    // A second pass is used to convert global variables into parameters, while
-    // allowing for renaming to properly function when minification is enabled.
-    const in_names = ["input_graph", "config", mode === "server" && "server_fetch_function"].filter(Boolean);
-    const combined_source = `
+  // A second pass is used to convert global variables into parameters, while
+  // allowing for renaming to properly function when minification is enabled.
+  const in_names = [
+    'input_graph',
+    'config',
+    side === 'server' && 'server_exports'
+  ].filter(Boolean);
+  const combined_source = `
     __marker__;
     let ${in_names.join(",")};
     __marker__(${in_names.join(",")});
     ${code};
   `;
-    const generated_entrypoint = join(kit_dir, `.runtime-${mode}.generated.ts`);
+    const generated_entrypoint = join(kit_dir, `.runtime-${side}.generated.ts`);
 
     writeFileSync(generated_entrypoint, combined_source);
-    using _ = {
-      [Symbol.dispose]: () => {
-        try {
-          rmSync(generated_entrypoint);
-        } catch {}
-      },
-    };
+    using _ = { [Symbol.dispose] : () => {
+      rmSync(generated_entrypoint);
+    }};
 
     result = await Bun.build({
       entrypoints: [generated_entrypoint],
@@ -90,18 +90,18 @@ const results = await Promise.allSettled(
 
     if (code[code.length - 1] === ";") code = code.slice(0, -1);
 
-    if (mode === "server") {
+    if (side === "server") {
       const server_fetch_function = names.split(",")[2].trim();
       code = debug ? `${code}  return ${server_fetch_function};\n` : `${code};return ${server_fetch_function};`;
     }
 
     code = debug ? `((${names}) => {${code}})({\n` : `((${names})=>{${code}})({`;
 
-    if (mode === "server") {
+    if (side === "server") {
       code = `export default await ${code}`;
     }
 
-    writeFileSync(join(codegen_root, `kit.${mode}.js`), code);
+    writeFileSync(join(codegen_root, `kit.${side}.js`), code);
   }),
 );
 

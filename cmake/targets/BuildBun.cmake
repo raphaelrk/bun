@@ -329,6 +329,7 @@ set(BUN_KIT_RUNTIME_CODEGEN_SCRIPT ${CWD}/src/codegen/kit-codegen.ts)
 file(GLOB_RECURSE BUN_KIT_RUNTIME_SOURCES ${CONFIGURE_DEPENDS}
   ${CWD}/src/kit/*.ts
   ${CWD}/src/kit/*/*.ts
+  ${CWD}/src/kit/*/*.css
 )
 
 list(APPEND BUN_KIT_RUNTIME_CODEGEN_SOURCES
@@ -398,6 +399,7 @@ set(BUN_OBJECT_LUT_SOURCES
   ${CWD}/src/bun.js/bindings/BunProcess.cpp
   ${CWD}/src/bun.js/bindings/ProcessBindingConstants.cpp
   ${CWD}/src/bun.js/bindings/ProcessBindingNatives.cpp
+  ${CWD}/src/bun.js/modules/NodeModuleModule.cpp
 )
 
 set(BUN_OBJECT_LUT_OUTPUTS
@@ -407,7 +409,9 @@ set(BUN_OBJECT_LUT_OUTPUTS
   ${CODEGEN_PATH}/BunProcess.lut.h
   ${CODEGEN_PATH}/ProcessBindingConstants.lut.h
   ${CODEGEN_PATH}/ProcessBindingNatives.lut.h
+  ${CODEGEN_PATH}/NodeModuleModule.lut.h
 )
+
 
 macro(WEBKIT_ADD_SOURCE_DEPENDENCIES _source _deps)
   set(_tmp)
@@ -569,6 +573,7 @@ file(GLOB BUN_CXX_SOURCES ${CONFIGURE_DEPENDS}
   ${CWD}/src/bun.js/bindings/webcrypto/*.cpp
   ${CWD}/src/bun.js/bindings/webcrypto/*/*.cpp
   ${CWD}/src/bun.js/bindings/v8/*.cpp
+  ${CWD}/src/bun.js/bindings/v8/shim/*.cpp
   ${CWD}/src/kit/*.cpp
   ${CWD}/src/deps/*.cpp
   ${BUN_USOCKETS_SOURCE}/src/crypto/*.cpp
@@ -616,6 +621,7 @@ list(APPEND BUN_CPP_SOURCES
   ${BUN_C_SOURCES}
   ${BUN_CXX_SOURCES}
   ${VENDOR_PATH}/picohttpparser/picohttpparser.c
+  ${NODEJS_HEADERS_PATH}/include/node/node_version.h
   ${BUN_ZIG_GENERATED_CLASSES_OUTPUTS}
   ${BUN_JS_SINK_OUTPUTS}
   ${BUN_JAVASCRIPT_OUTPUTS}
@@ -693,6 +699,7 @@ target_include_directories(${bun} PRIVATE
   ${CWD}/src/bun.js/bindings/webcore
   ${CWD}/src/bun.js/bindings/webcrypto
   ${CWD}/src/bun.js/bindings/sqlite
+  ${CWD}/src/bun.js/bindings/v8
   ${CWD}/src/bun.js/modules
   ${CWD}/src/js/builtins
   ${CWD}/src/napi
@@ -700,6 +707,7 @@ target_include_directories(${bun} PRIVATE
   ${CODEGEN_PATH}
   ${VENDOR_PATH}
   ${VENDOR_PATH}/picohttpparser
+  ${NODEJS_HEADERS_PATH}/include
 )
 
 # --- C/C++ Definitions ---
@@ -875,26 +883,33 @@ else()
     -Wl,--as-needed
     -Wl,--gc-sections
     -Wl,-z,stack-size=12800000
-    -Wl,--wrap=fcntl
-    -Wl,--wrap=fcntl64
-    -Wl,--wrap=stat64
-    -Wl,--wrap=pow
+    -Wl,--wrap=cosf
     -Wl,--wrap=exp
     -Wl,--wrap=expf
-    -Wl,--wrap=log
-    -Wl,--wrap=log2
-    -Wl,--wrap=lstat
-    -Wl,--wrap=stat64
-    -Wl,--wrap=stat
+    -Wl,--wrap=fcntl
+    -Wl,--wrap=fcntl64
+    -Wl,--wrap=fmod
+    -Wl,--wrap=fmodf
     -Wl,--wrap=fstat
-    -Wl,--wrap=fstatat
-    -Wl,--wrap=lstat64
     -Wl,--wrap=fstat64
+    -Wl,--wrap=fstatat
     -Wl,--wrap=fstatat64
+    -Wl,--wrap=log
+    -Wl,--wrap=log10f
+    -Wl,--wrap=log2
+    -Wl,--wrap=log2f
+    -Wl,--wrap=logf
+    -Wl,--wrap=lstat
+    -Wl,--wrap=lstat64
     -Wl,--wrap=mknod
     -Wl,--wrap=mknodat
+    -Wl,--wrap=pow
+    -Wl,--wrap=sincosf
+    -Wl,--wrap=sinf
+    -Wl,--wrap=stat
+    -Wl,--wrap=stat64
     -Wl,--wrap=statx
-    -Wl,--wrap=fmod
+    -Wl,--wrap=tanf
     -Wl,--compress-debug-sections=zlib
     -Wl,-z,lazy
     -Wl,-z,norelro

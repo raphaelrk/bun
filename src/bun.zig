@@ -34,10 +34,38 @@ pub const auto_allocator: std.mem.Allocator = if (!use_mimalloc)
 else
     @import("./memory_allocator.zig").auto_allocator;
 
-pub const huge_allocator_threshold: comptime_int = @import("./memory_allocator.zig").huge_threshold;
-
 pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
 pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .Unspecified else .Inline;
+
+/// Restrict a value to a certain interval unless it is a float and NaN.
+pub inline fn clamp(self: anytype, min: @TypeOf(self), max: @TypeOf(self)) @TypeOf(self) {
+    bun.debugAssert(min <= max);
+    if (comptime (@TypeOf(self) == f32 or @TypeOf(self) == f64)) {
+        return clampFloat(self, min, max);
+    }
+    return std.math.clamp(self, min, max);
+}
+
+/// Restrict a value to a certain interval unless it is NaN.
+///
+/// Returns `max` if `self` is greater than `max`, and `min` if `self` is
+/// less than `min`. Otherwise this returns `self`.
+///
+/// Note that this function returns NaN if the initial value was NaN as
+/// well.
+pub inline fn clampFloat(_self: anytype, min: @TypeOf(_self), max: @TypeOf(_self)) @TypeOf(_self) {
+    if (comptime !(@TypeOf(_self) == f32 or @TypeOf(_self) == f64)) {
+        @compileError("Only call this on floats.");
+    }
+    var self = _self;
+    if (self < min) {
+        self = min;
+    }
+    if (self > max) {
+        self = max;
+    }
+    return self;
+}
 
 /// We cannot use a threadlocal memory allocator for FileSystem-related things
 /// FileSystem is a singleton.
@@ -68,6 +96,8 @@ pub const JSError = error{
     JSError,
 };
 
+pub const detectCI = @import("./ci_info.zig").detectCI;
+
 pub const C = @import("root").C;
 pub const sha = @import("./sha.zig");
 pub const FeatureFlags = @import("feature_flags.zig");
@@ -93,6 +123,8 @@ pub const ComptimeStringMapWithKeyType = comptime_string_map.ComptimeStringMapWi
 pub const glob = @import("./glob.zig");
 pub const patch = @import("./patch.zig");
 pub const ini = @import("./ini.zig");
+pub const Bitflags = @import("./bitflags.zig").Bitflags;
+pub const css = @import("./css/css_parser.zig");
 
 pub const shell = struct {
     pub usingnamespace @import("./shell/shell.zig");
@@ -268,6 +300,8 @@ pub fn platformIOVecToSlice(iovec: PlatformIOVec) []u8 {
     if (Environment.isWindows) return windows.libuv.uv_buf_t.slice(iovec);
     return iovec.base[0..iovec.len];
 }
+
+pub const libarchive = @import("./libarchive/libarchive.zig");
 
 pub const StringTypes = @import("string_types.zig");
 pub const stringZ = StringTypes.stringZ;
@@ -968,13 +1002,14 @@ pub const StringArrayHashMapContext = struct {
     pub const Prehashed = struct {
         value: u32,
         input: []const u8,
+
         pub fn hash(this: @This(), s: []const u8) u32 {
             if (s.ptr == this.input.ptr and s.len == this.input.len)
                 return this.value;
             return @as(u32, @truncate(std.hash.Wyhash.hash(0, s)));
         }
 
-        pub fn eql(_: @This(), a: []const u8, b: []const u8) bool {
+        pub fn eql(_: @This(), a: []const u8, b: []const u8, _: usize) bool {
             return strings.eqlLong(a, b, true);
         }
     };
@@ -2200,9 +2235,12 @@ pub const Stat = if (Environment.isWindows) windows.libuv.uv_stat_t else std.pos
 pub var argv: [][:0]const u8 = &[_][:0]const u8{};
 
 pub fn initArgv(allocator: std.mem.Allocator) !void {
-    if (comptime !Environment.isWindows) {
-        argv = try std.process.argsAlloc(allocator);
-    } else {
+    if (comptime Environment.isPosix) {
+        argv = try allocator.alloc([:0]const u8, std.os.argv.len);
+        for (0..argv.len) |i| {
+            argv[i] = std.mem.sliceTo(std.os.argv[i], 0);
+        }
+    } else if (comptime Environment.isWindows) {
         // Zig's implementation of `std.process.argsAlloc()`on Windows platforms
         // is not reliable, specifically the way it splits the command line string.
         //
@@ -2252,6 +2290,8 @@ pub fn initArgv(allocator: std.mem.Allocator) !void {
         }
 
         argv = out_argv;
+    } else {
+        argv = try std.process.argsAlloc(allocator);
     }
 }
 
@@ -2959,6 +2999,12 @@ pub noinline fn outOfMemory() noreturn {
     crash_handler.crashHandler(.out_of_memory, null, @returnAddress());
 }
 
+pub fn todoPanic(src: std.builtin.SourceLocation, comptime format: string, args: anytype) noreturn {
+    @setCold(true);
+    bun.Analytics.Features.todo_panic = 1;
+    Output.panic("TODO: " ++ format ++ " ({s}:{d})", args ++ .{ src.file, src.line });
+}
+
 /// Wrapper around allocator.create(T) that safely initializes the pointer. Prefer this over
 /// `std.mem.Allocator.create`, but prefer using `bun.new` over `create(default_allocator, T, t)`
 pub fn create(allocator: std.mem.Allocator, comptime T: type, t: T) *T {
@@ -3434,7 +3480,7 @@ pub fn assertWithLocation(value: bool, src: std.builtin.SourceLocation) callconv
 }
 
 /// This has no effect on the real code but capturing 'a' and 'b' into parameters makes assertion failures much easier inspect in a debugger.
-pub fn assert_eql(a: anytype, b: anytype) callconv(callconv_inline) void {
+pub inline fn assert_eql(a: anytype, b: anytype) void {
     if (@inComptime()) {
         if (a != b) {
             @compileLog(a);
@@ -3442,7 +3488,10 @@ pub fn assert_eql(a: anytype, b: anytype) callconv(callconv_inline) void {
             @compileError("A != B");
         }
     }
-    return assert(a == b);
+    if (!Environment.allow_assert) return;
+    if (a != b) {
+        Output.panic("Assertion failure: {} != {}", .{ a, b });
+    }
 }
 
 /// This has no effect on the real code but capturing 'a' and 'b' into parameters makes assertion failures much easier inspect in a debugger.
@@ -3713,7 +3762,9 @@ pub fn memmove(output: []u8, input: []const u8) void {
 pub const hmac = @import("./hmac.zig");
 pub const libdeflate = @import("./deps/libdeflate.zig");
 
-pub const kit = @import("kit/kit.zig");
+/// Deprecated: use `bun.bake`
+pub const kit = bake;
+pub const bake = @import("kit/bake.zig");
 
 /// like std.enums.tagName, except it doesn't lose the sentinel value.
 pub fn tagName(comptime Enum: type, value: Enum) ?[:0]const u8 {
@@ -3782,4 +3833,71 @@ pub fn WeakPtr(comptime T: type, comptime weakable_field: std.meta.FieldEnum(T))
             return null;
         }
     };
+}
+
+pub const DebugThreadLock = if (Environment.allow_assert)
+    struct {
+        owning_thread: ?std.Thread.Id = null,
+
+        pub fn lock(impl: *@This()) void {
+            bun.assert(impl.owning_thread == null);
+            impl.owning_thread = std.Thread.getCurrentId();
+        }
+
+        pub fn unlock(impl: *@This()) void {
+            impl.assertLocked();
+            impl.owning_thread = null;
+        }
+
+        pub fn assertLocked(impl: *const @This()) void {
+            assert(std.Thread.getCurrentId() == impl.owning_thread);
+        }
+    }
+else
+    struct {
+        pub fn lock(_: *@This()) void {}
+        pub fn unlock(_: *@This()) void {}
+        pub fn assertLocked(_: *const @This()) void {}
+    };
+
+pub const bytecode_extension = ".jsc";
+
+/// An typed index into an array or other structure.
+/// maxInt is reserved for an empty state.
+///
+/// `const Index = bun.GenericIndex(u32, opaque{})
+///
+/// The empty opaque prevents Zig from memoizing the
+/// call, which would otherwise make all indexes
+/// equal to each other.
+pub fn GenericIndex(backing_int: type, uid: anytype) type {
+    return enum(backing_int) {
+        _,
+        const Index = @This();
+        comptime {
+            _ = uid;
+        }
+
+        pub fn toOptional(oi: @This()) Optional {
+            return @enumFromInt(@intFromEnum(oi));
+        }
+
+        pub const Optional = enum(backing_int) {
+            none = std.math.maxInt(backing_int),
+            _,
+
+            pub fn init(maybe: ?Index) ?Index {
+                return if (maybe) |i| @enumFromInt(@intFromEnum(i)) else .none;
+            }
+
+            pub fn unwrap(oi: Optional) ?Index {
+                return if (oi == .none) null else @enumFromInt(@intFromEnum(oi));
+            }
+        };
+    };
+}
+
+comptime {
+    // Must be nominal
+    assert(GenericIndex(u32, opaque {}) != GenericIndex(u32, opaque {}));
 }

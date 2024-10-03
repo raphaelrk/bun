@@ -120,6 +120,7 @@ export interface BundlerTestInput {
   /** Temporary flag to mark failing tests as skipped. */
   todo?: boolean;
 
+
   // file options
   files: Record<string, string | Buffer | Blob>;
   /** Files to be written only after the bundle is done. */
@@ -269,6 +270,11 @@ export interface BundlerTestInput {
   snapshotSourceMap?: Record<string, SourceMapTests>;
 
   expectExactFilesize?: Record<string, number>;
+
+  /** Multiplier for test timeout */
+  timeoutScale?: number;
+  /** Multiplier for test timeout when using bun-debug. Debug builds already have a higher timeout. */
+  debugTimeoutScale?: number;
 }
 
 export interface SourceMapTests {
@@ -326,6 +332,7 @@ export interface BundlerTestRunOptions {
   bunArgs?: string[];
   /** match exact stdout */
   stdout?: string | RegExp;
+  stderr?: string;
   /** partial match stdout (toContain()) */
   partialStdout?: string;
   /** match exact error message, example "ReferenceError: Can't find variable: bar" */
@@ -444,6 +451,7 @@ function expectBundled(
     unsupportedJSFeatures,
     useDefineForClassFields,
     ignoreDCEAnnotations,
+    bytecode = false,
     emitDCEAnnotations,
     // @ts-expect-error
     _referenceFn,
@@ -467,8 +475,15 @@ function expectBundled(
 
   // Resolve defaults for options and some related things
   bundling ??= true;
-  target ??= "browser";
+
+  if (bytecode) {
+    format ??= "cjs";
+    target ??= "bun";
+  }
+
   format ??= "esm";
+  target ??= "browser";
+
   entryPoints ??= entryPointsRaw ? [] : [Object.keys(files)[0]];
   if (run === true) run = {};
   if (metafile === true) metafile = "/metafile.json";
@@ -479,9 +494,7 @@ function expectBundled(
   if (bundling === false && entryPoints.length > 1) {
     throw new Error("bundling:false only supports a single entry point");
   }
-  if (!ESBUILD && (format === "cjs" || format === "iife")) {
-    throw new Error(`format ${format} not implemented in bun build`);
-  }
+
   if (!ESBUILD && metafile) {
     throw new Error("metafile not implemented in bun build");
   }
@@ -513,6 +526,9 @@ function expectBundled(
     if (unsupportedLoaderTypes.length) {
       throw new Error(`loader '${unsupportedLoaderTypes.join("', '")}' not implemented in bun build`);
     }
+  }
+  if (ESBUILD && bytecode) {
+    throw new Error("bytecode not implemented in esbuild");
   }
   if (ESBUILD && skipOnEsbuild) {
     return testRef(id, opts);
@@ -660,6 +676,7 @@ function expectBundled(
               // mainFields && `--main-fields=${mainFields}`,
               loader && Object.entries(loader).map(([k, v]) => ["--loader", `${k}:${v}`]),
               publicPath && `--public-path=${publicPath}`,
+              bytecode && "--bytecode",
             ]
           : [
               ESBUILD_PATH,
@@ -963,6 +980,7 @@ function expectBundled(
           sourcemap: sourceMap,
           splitting,
           target,
+          bytecode,
           publicPath,
           emitDCEAnnotations,
           ignoreDCEAnnotations,
@@ -1419,7 +1437,6 @@ for (const [key, blob] of build.outputs) {
         } else {
           throw new Error(prefix + "run.file is required when there is more than one entrypoint.");
         }
-
         const args = [
           ...(compile ? [] : [(run.runtime ?? "bun") === "bun" ? bunExe() : "node"]),
           ...(run.bunArgs ?? []),
@@ -1431,6 +1448,7 @@ for (const [key, blob] of build.outputs) {
           cmd: args,
           env: {
             ...bunEnv,
+            ...(run.env || {}),
             FORCE_COLOR: "0",
             IS_TEST_RUNNER: "1",
           },
@@ -1504,28 +1522,35 @@ for (const [key, blob] of build.outputs) {
           run.validate({ stderr: stderr.toUnixString(), stdout: stdout.toUnixString() });
         }
 
-        if (run.stdout !== undefined) {
-          const result = stdout!.toUnixString().trim();
-          if (typeof run.stdout === "string") {
-            const expected = dedent(run.stdout).trim();
+        for (let [name, expected, out] of [
+          ["stdout", run.stdout, stdout],
+          ["stderr", run.stderr, stderr],
+        ].filter(([, v]) => v !== undefined)) {
+          let result = out!.toUnixString().trim();
+
+          // no idea why this logs. ¯\_(ツ)_/¯
+          result = result.replace(`[EventLoop] enqueueTaskConcurrent(RuntimeTranspilerStore)\n`, '');
+
+          if (typeof expected === "string") {
+            expected = dedent(expected).trim();
             if (expected !== result) {
               console.log(`runtime failed file: ${file}`);
-              console.log(`reference stdout:`);
+              console.log(`${name} output:`);
               console.log(result);
               console.log(`---`);
-              console.log(`expected stdout:`);
+              console.log(`expected ${name}:`);
               console.log(expected);
               console.log(`---`);
             }
             expect(result).toBe(expected);
           } else {
-            if (!run.stdout.test(result)) {
+            if (!expected.test(result)) {
               console.log(`runtime failed file: ${file}`);
-              console.log(`reference stdout:`);
+              console.log(`${name} output:`);
               console.log(result);
               console.log(`---`);
             }
-            expect(result).toMatch(run.stdout);
+            expect(result).toMatch(expected);
           }
         }
 
@@ -1546,7 +1571,7 @@ for (const [key, blob] of build.outputs) {
     return testRef(id, opts);
   })();
 }
-
+let anyOnly = false;
 /** Shorthand for test and expectBundled. See `expectBundled` for what this does.
  */
 export function itBundled(
@@ -1579,11 +1604,28 @@ export function itBundled(
       id,
       () => expectBundled(id, opts as any),
       // sourcemap code is slow
-      isDebug ? Infinity : opts.snapshotSourceMap ? 30_000 : undefined,
+      (opts.snapshotSourceMap
+        ? isDebug ? Infinity : 30_000
+        : isDebug ? 15_000 : 5_000)
+      * ((isDebug ? opts.debugTimeoutScale : opts.timeoutScale) ?? 1),
     );
   }
   return ref;
 }
+itBundled.only = (id: string, opts: BundlerTestInput) => {
+  const { it } = testForFile(currentFile ?? callerSourceOrigin());
+
+  it.only(
+    id,
+    () => expectBundled(id, opts as any),
+    // sourcemap code is slow
+    (opts.snapshotSourceMap
+      ? isDebug ? Infinity : 30_000
+      : isDebug ? 15_000 : 5_000)
+    * ((isDebug ? opts.debugTimeoutScale : opts.timeoutScale) ?? 1),
+  );
+};
+
 itBundled.skip = (id: string, opts: BundlerTestInput) => {
   if (FILTER && !filterMatches(id)) {
     return testRef(id, opts);

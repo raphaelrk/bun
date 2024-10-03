@@ -1,9 +1,33 @@
 #include "KitDevGlobalObject.h"
 #include "JSNextTickQueue.h"
 #include "JavaScriptCore/GlobalObjectMethodTable.h"
+#include "JavaScriptCore/JSInternalPromise.h"
+#include "ProcessIdentifier.h"
 #include "headers-handwritten.h"
 
 namespace Kit {
+
+extern "C" void KitInitProcessIdentifier() {
+  // assert is on main thread
+  WebCore::Process::identifier();
+}
+
+JSC::JSInternalPromise *
+moduleLoaderImportModule(JSC::JSGlobalObject *jsGlobalObject,
+                         JSC::JSModuleLoader *, JSC::JSString *moduleNameValue,
+                         JSC::JSValue parameters,
+                         const JSC::SourceOrigin &sourceOrigin) {
+  // TODO: forward this to the runtime?
+  JSC::VM &vm = jsGlobalObject->vm();
+  auto err = JSC::createTypeError(
+      jsGlobalObject,
+      WTF::makeString(
+          "Dynamic import should have been replaced with a hook into the module runtime"_s));
+  auto *promise = JSC::JSInternalPromise::create(
+      vm, jsGlobalObject->internalPromiseStructure());
+  promise->reject(jsGlobalObject, err);
+  return promise;
+}
 
 #define INHERIT_HOOK_METHOD(name)                                              \
   Zig::GlobalObject::s_globalObjectMethodTable.name
@@ -15,7 +39,7 @@ const JSC::GlobalObjectMethodTable DevGlobalObject::s_globalObjectMethodTable =
         INHERIT_HOOK_METHOD(javaScriptRuntimeFlags),
         INHERIT_HOOK_METHOD(queueMicrotaskToEventLoop),
         INHERIT_HOOK_METHOD(shouldInterruptScriptBeforeTimeout),
-        INHERIT_HOOK_METHOD(moduleLoaderImportModule),
+        moduleLoaderImportModule,
         INHERIT_HOOK_METHOD(moduleLoaderResolve),
         INHERIT_HOOK_METHOD(moduleLoaderFetch),
         INHERIT_HOOK_METHOD(moduleLoaderCreateImportMetaProperties),
@@ -72,16 +96,17 @@ extern "C" DevGlobalObject *KitCreateDevGlobal(DevServer *owner,
   global->setConsole(console);
   global->setStackTraceLimit(10); // Node.js defaults to 10
 
+  // TODO: it segfaults! process.nextTick is scoped out for now i guess!
   // vm.setOnComputeErrorInfo(computeErrorInfoWrapper);
-  vm.setOnEachMicrotaskTick([global](JSC::VM &vm) -> void {
-    if (auto nextTickQueue = global->m_nextTickQueue.get()) {
-      global->resetOnEachMicrotaskTick();
-      Bun::JSNextTickQueue *queue =
-          jsCast<Bun::JSNextTickQueue *>(nextTickQueue);
-      queue->drain(vm, global);
-      return;
-    }
-  });
+  // vm.setOnEachMicrotaskTick([global](JSC::VM &vm) -> void {
+  //   if (auto nextTickQueue = global->m_nextTickQueue.get()) {
+  //     global->resetOnEachMicrotaskTick();
+  //     // Bun::JSNextTickQueue *queue =
+  //     //     jsCast<Bun::JSNextTickQueue *>(nextTickQueue);
+  //     // queue->drain(vm, global);
+  //     return;
+  //   }
+  // });
 
   return global;
 }

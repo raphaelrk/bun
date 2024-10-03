@@ -105,6 +105,83 @@ pub const JSObject = extern struct {
     };
 };
 
+pub const CachedBytecode = opaque {
+    extern fn generateCachedModuleByteCodeFromSourceCode(sourceProviderURL: *bun.String, input_code: [*]const u8, inputSourceCodeSize: usize, outputByteCode: *?[*]u8, outputByteCodeSize: *usize, cached_bytecode: *?*CachedBytecode) bool;
+    extern fn generateCachedCommonJSProgramByteCodeFromSourceCode(sourceProviderURL: *bun.String, input_code: [*]const u8, inputSourceCodeSize: usize, outputByteCode: *?[*]u8, outputByteCodeSize: *usize, cached_bytecode: *?*CachedBytecode) bool;
+
+    pub fn generateForESM(sourceProviderURL: *bun.String, input: []const u8) ?struct { []const u8, *CachedBytecode } {
+        var this: ?*CachedBytecode = null;
+
+        var input_code_size: usize = 0;
+        var input_code_ptr: ?[*]u8 = null;
+        if (generateCachedModuleByteCodeFromSourceCode(sourceProviderURL, input.ptr, input.len, &input_code_ptr, &input_code_size, &this)) {
+            return .{ input_code_ptr.?[0..input_code_size], this.? };
+        }
+
+        return null;
+    }
+
+    pub fn generateForCJS(sourceProviderURL: *bun.String, input: []const u8) ?struct { []const u8, *CachedBytecode } {
+        var this: ?*CachedBytecode = null;
+        var input_code_size: usize = 0;
+        var input_code_ptr: ?[*]u8 = null;
+        if (generateCachedCommonJSProgramByteCodeFromSourceCode(sourceProviderURL, input.ptr, input.len, &input_code_ptr, &input_code_size, &this)) {
+            return .{ input_code_ptr.?[0..input_code_size], this.? };
+        }
+
+        return null;
+    }
+
+    extern "C" fn CachedBytecode__deref(this: *CachedBytecode) void;
+    pub fn deref(this: *CachedBytecode) void {
+        return CachedBytecode__deref(this);
+    }
+
+    pub fn generate(format: bun.options.Format, input: []const u8, source_provider_url: *bun.String) ?struct { []const u8, *CachedBytecode } {
+        return switch (format) {
+            .esm => generateForESM(source_provider_url, input),
+            .cjs => generateForCJS(source_provider_url, input),
+            else => null,
+        };
+    }
+
+    pub const VTable = &std.mem.Allocator.VTable{
+        .alloc = struct {
+            pub fn alloc(ctx: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
+                _ = ctx; // autofix
+                _ = len; // autofix
+                _ = ptr_align; // autofix
+                _ = ret_addr; // autofix
+                @panic("Unexpectedly called CachedBytecode.alloc");
+            }
+        }.alloc,
+        .resize = struct {
+            pub fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
+                _ = ctx; // autofix
+                _ = buf; // autofix
+                _ = buf_align; // autofix
+                _ = new_len; // autofix
+                _ = ret_addr; // autofix
+                return false;
+            }
+        }.resize,
+        .free = struct {
+            pub fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, _: usize) void {
+                _ = buf; // autofix
+                _ = buf_align; // autofix
+                CachedBytecode__deref(@ptrCast(ctx));
+            }
+        }.free,
+    };
+
+    pub fn allocator(this: *CachedBytecode) std.mem.Allocator {
+        return .{
+            .ptr = this,
+            .vtable = VTable,
+        };
+    }
+};
+
 /// Prefer using bun.String instead of ZigString in new code.
 pub const ZigString = extern struct {
     /// This can be a UTF-16, Latin1, or UTF-8 string.
@@ -1764,6 +1841,10 @@ pub const JSString = extern struct {
     pub const name = "JSC::JSString";
     pub const namespace = "JSC";
 
+    pub fn toJS(str: *JSString) JSValue {
+        return JSValue.fromCell(str);
+    }
+
     pub fn toObject(this: *JSString, global: *JSGlobalObject) ?*JSObject {
         return shim.cppFn("toObject", .{ this, global });
     }
@@ -3304,7 +3385,6 @@ pub const JSGlobalObject = opaque {
             //   make clean-jsc-bindings
             //   make bindings -j10
             const assertion = this.bunVMUnsafe() == @as(*anyopaque, @ptrCast(JSC.VirtualMachine.get()));
-            if (!assertion) @breakpoint();
             bun.assert(assertion);
         }
         return @as(*JSC.VirtualMachine, @ptrCast(@alignCast(this.bunVMUnsafe())));
@@ -5269,8 +5349,7 @@ pub const JSValue = enum(JSValueReprInt) {
             return error.JSError;
         }
 
-        const target_str = this.getZigString(globalThis);
-        return StringMap.getWithEql(target_str, ZigString.eqlComptime) orelse {
+        return StringMap.fromJS(globalThis, this) orelse {
             const one_of = struct {
                 pub const list = brk: {
                     var str: []const u8 = "'";
@@ -5288,7 +5367,8 @@ pub const JSValue = enum(JSValueReprInt) {
 
                 pub const label = property_name ++ " must be one of " ++ list;
             }.label;
-            globalThis.throwInvalidArguments(one_of, .{});
+            if (!globalThis.hasException())
+                globalThis.throwInvalidArguments(one_of, .{});
             return error.JSError;
         };
     }
@@ -5962,13 +6042,13 @@ pub const JSValue = enum(JSValueReprInt) {
         "jestDeepMatch",
     };
 
-    // For any callback JSValue created in JS that you will not call *immediately*, you must wrap it
-    // in an AsyncContextFrame with this function. This allows AsyncLocalStorage to work by
-    // snapshotting it's state and restoring it when called.
-    // - If there is no current context, this returns the callback as-is.
-    // - It is safe to run .call() on the resulting JSValue. This includes automatic unwrapping.
-    // - Do not pass the callback as-is to JS; The wrapped object is NOT a function.
-    // - If passed to C++, call it with AsyncContextFrame::call() instead of JSC::call()
+    /// For any callback JSValue created in JS that you will not call *immediately*, you must wrap it
+    /// in an AsyncContextFrame with this function. This allows AsyncLocalStorage to work by
+    /// snapshotting it's state and restoring it when called.
+    /// - If there is no current context, this returns the callback as-is.
+    /// - It is safe to run .call() on the resulting JSValue. This includes automatic unwrapping.
+    /// - Do not pass the callback as-is to JS; The wrapped object is NOT a function.
+    /// - If passed to C++, call it with AsyncContextFrame::call() instead of JSC::call()
     pub inline fn withAsyncContextIfNeeded(this: JSValue, global: *JSGlobalObject) JSValue {
         JSC.markBinding(@src());
         return AsyncContextFrame__withAsyncContextIfNeeded(global, this);
@@ -6025,7 +6105,7 @@ pub const JSValue = enum(JSValueReprInt) {
 
     /// For native C++ classes extending JSCell, this retrieves s_info's name
     pub fn getClassInfoName(this: JSValue) ?bun.String {
-        if (!this.isObject()) return null;
+        if (!this.isCell()) return null;
         var out: bun.String = bun.String.empty;
         if (!JSC__JSValue__getClassInfoName(this, &out)) return null;
         return out;
